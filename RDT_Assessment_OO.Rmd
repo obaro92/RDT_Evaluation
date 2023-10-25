@@ -1,0 +1,354 @@
+---
+title: "Evaluation of a Rapid Diagnostic test (RDT) to Diagnose a Parasite-borne Disease"
+author: "Obaroene Ogidiagba"
+date: "2023-05-23"
+output:
+    html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Preprocessing
+
+```{r Imorting the librariers}
+library(dplyr)    # For data manipulation
+library(ggplot2)  # For data visualization
+library(tableone) # For creating descriptive statistics
+library(caTools)
+library(caret)
+library(pROC)
+```
+
+```{r r Import the data and inspect data}
+data <- read.csv("dataset_to_analyse.csv")
+# Data summary
+str(data)
+```
+
+```{r Convert integer variables to factor}
+data <- data %>%
+  mutate(across(c(
+    GENDER, DISEASE_SYMPT, INDEX_DONE, INDEX_LOT_N, INDEX_RES_CTRL,
+    INDEX_RES_SPEC_1, INDEX_RES_SPEC_2, INDEX_POS, REF_RDT_DONE,
+    REF_RDT_RES_CTRL, REF_RDT_RES_SPEC_1, REF_RDT_RES_SPEC_2,
+    REF_RDT_POS, REF_MICRO_POS, REF_MICRO_SPEC
+  ), as.factor))
+
+# Data summary
+str(data)
+```
+
+```{r Descriptive statistics for the dataset}
+#Creating a list of all variables
+myVars <- c("Participant.ID", "site", "DOB", "AGE", "GENDER", "DISEASE_SYMPT",
+            "INDEX_DONE", "INDEX_LOT_N", "INDEX_RES_CTRL",
+            "INDEX_RES_SPEC_1", "INDEX_RES_SPEC_2", "INDEX_POS",
+            "REF_RDT_DONE", "REF_RDT_RES_CTRL", "REF_RDT_RES_SPEC_1",
+            "REF_RDT_RES_SPEC_2", "REF_RDT_POS", "REF_MICRO_POS",
+            "REF_MICRO_SPEC", "BIOMARKER_LEV")
+
+#Creating a list of all categorical variables
+catVars <- c("GENDER", "DISEASE_SYMPT",
+             "INDEX_DONE", "INDEX_LOT_N", "INDEX_RES_CTRL",
+             "INDEX_RES_SPEC_1", "INDEX_RES_SPEC_2", "INDEX_POS",
+             "REF_RDT_DONE", "REF_RDT_RES_CTRL", "REF_RDT_RES_SPEC_1",
+             "REF_RDT_RES_SPEC_2", "REF_RDT_POS", "REF_MICRO_POS",
+             "REF_MICRO_SPEC")
+
+# Creating a descriptive statistics table of categorical variables
+Des_Table <- CreateTableOne(vars = myVars, data = data, factorVars = catVars)
+
+# Print the dataframe
+print(Des_Table, showAllLevels = TRUE)
+
+#Creating a summary of the categorical and continous variables with percentage of missingness
+summary(Des_Table$ContTable)  # Continous variables
+summary(Des_Table$CatTable)   # Categorical variables
+
+#Drop REF_MICRO_SPEC as it has 98.8% of data N/A
+#N:B REF_MICRO_POS has 85.4% data missing, Age 37% and DOB with 63% missing
+data <- data %>%
+  select(-REF_MICRO_SPEC)
+```
+
+```{r Exploring continous variables}
+# Histogram for distribution for Biomarker level
+ggplot(data, aes(x = BIOMARKER_LEV)) +
+  geom_histogram(fill = "lightblue", color = "black") +
+  labs(title = "Distribution of Biomarker Levels", x = "Biomarker Level", y = "Frequency")
+
+#Boxplot to check for outliers for Biomarker level
+ggplot(data, aes(y = BIOMARKER_LEV)) +
+  geom_boxplot(fill = "lightblue", color = "black") +
+  labs(title = "Biomarkers outliers", y = "Frequency")
+
+# Histogram for distribution for AGE
+ggplot(data, aes(x = AGE)) +
+  geom_histogram(fill = "lightblue", color = "black") +
+  labs(title = "Distribution of Age", x = "Biomarker Level", y = "Frequency")
+
+#Boxplot to check for outliers for AGE
+ggplot(data, aes(y = AGE)) +
+  geom_boxplot(fill = "lightblue", color = "black") +
+  labs(title = "Age Outliers", y = "Frequency")
+
+#summary of Age
+summary(data$AGE)   #Maximum age is 243
+
+# Remove observations with age > 125 from the data
+data <- data[data$AGE <= 125, ]
+summary(data$AGE)    #Maximum age now 85
+
+# Histogram for distribution for AGE after removing outliers
+ggplot(data, aes(x = AGE)) +
+  geom_histogram(fill = "lightblue", color = "black") +
+  labs(title = "Distribution of Age with max of 85", x = "Biomarker Level", y = "Frequency")
+
+#Boxplot to check for outliers for AGE after removing outliers
+ggplot(data, aes(y = AGE)) +
+  geom_boxplot(fill = "lightblue", color = "black") +
+  labs(title = "Boxplot of Age max of 85", y = "Frequency")
+
+```
+
+## Performance of the novel index RDT vs the microscopy and the reference RDT
+
+```{r Index RDT vs Reference Microscopy}
+# Create contingency tables for microscopy and index RDT
+table_index_micro <- table(data$INDEX_POS, data$REF_MICRO_POS)
+
+# Calculate performance metrics for microscopy and index RDT
+metrics_index_micro <- c(
+  sensitivity = table_index_micro[2, 2] / sum(table_index_micro[, 2]),
+  specificity = table_index_micro[1, 1] / sum(table_index_micro[, 1]),
+  ppv = table_index_micro[2, 2] / sum(table_index_micro[2, ]),
+  npv = table_index_micro[1, 1] / sum(table_index_micro[1, ]),
+  accuracy = sum(diag(table_index_micro)) / sum(table_index_micro)
+)
+
+# Print the performance metrics for microscopy and index RDT
+print("Index RDT vs. Microscopy:")
+print(metrics_index_micro)
+
+# Perform McNemar's test
+mcnemar_test_index_micro <- mcnemar.test(table_index_micro)
+p_value_index_micro <- mcnemar_test_index_micro$p.value
+
+# Calculate the confidence intervals
+n1 <- table_index_micro[1, 2] + table_index_micro[2, 2]
+n2 <- table_index_micro[2, 1] + table_index_micro[1, 1]
+
+# Calculate the lower and upper bounds of the confidence interval
+lower_bound <- (table_index_micro[2, 1] - table_index_micro[1, 2]) / n1 - 1.96 * sqrt((table_index_micro[2, 1] + table_index_micro[1, 2]) / n1^2)
+upper_bound <- (table_index_micro[2, 1] - table_index_micro[1, 2]) / n1 + 1.96 * sqrt((table_index_micro[2, 1] + table_index_micro[1, 2]) / n1^2)
+
+# Print the McNemar's test result and confidence intervals
+cat("McNemar's test p-value:", p_value_index_micro, "\n")
+cat("Confidence Intervals:", lower_bound, upper_bound, "\n\n")
+
+
+```
+
+```{r Index RDT vs Reference RDT}
+# Create contingency table for index RDT and Reference RDT
+table_index_ref <- table(data$INDEX_POS, data$REF_RDT_POS)
+
+# Calculate performance metrics for index RDT and reference RDT
+metrics_index_ref <- c(
+  sensitivity = table_index_ref[2, 2] / sum(table_index_ref[, 2]),
+  specificity = table_index_ref[1, 1] / sum(table_index_ref[, 1]),
+  ppv = table_index_ref[2, 2] / sum(table_index_ref[2, ]),
+  npv = table_index_ref[1, 1] / sum(table_index_ref[1, ]),
+  accuracy = sum(diag(table_index_ref)) / sum(table_index_ref)
+)
+
+# Print the performance metrics
+print("Index RDT vs. Reference RDT:")
+print(metrics_index_ref)
+
+# Perform McNemar's test
+mcnemar_test_index_ref <- mcnemar.test(table_index_ref)
+p_value_index_ref <- mcnemar_test_index_ref$p.value
+
+# Calculate the confidence intervals
+n1 <- table_index_ref[1, 2] + table_index_ref[2, 2]
+n2 <- table_index_ref[2, 1] + table_index_ref[1, 1]
+
+# Calculate the lower and upper bounds of the confidence interval
+lower_bound <- (table_index_ref[2, 1] - table_index_ref[1, 2]) / n1 - 1.96 * sqrt((table_index_ref[2, 1] + table_index_ref[1, 2]) / n1^2)
+upper_bound <- (table_index_ref[2, 1] - table_index_ref[1, 2]) / n1 + 1.96 * sqrt((table_index_ref[2, 1] + table_index_ref[1, 2]) / n1^2)
+
+# Print the McNemar's test result and confidence intervals
+cat("McNemar's test p-value:", p_value_index_ref, "\n")
+cat("Confidence Intervals:", lower_bound, upper_bound, "\n\n")
+
+```
+
+## Patient status prediction using the biomaker level
+
+#### Missing data will be handled using a complete case analysis. After appling the little MCAR test to determine if the data was MCAR or MAR, the test showed a statistically significant result. The choice of complete case analysis can potentially introduce some bias into the study but this was chosen due to the limited insight into the sampling and data collection for this study
+
+```{r Data Exploration and Feature Selection }
+# Create a new dataframe with selected variables
+complete_data_ref_micro <- data[, c("BIOMARKER_LEV", "REF_MICRO_POS")]
+
+complete_Table <- CreateTableOne(vars = c("BIOMARKER_LEV", "REF_MICRO_POS"),data = complete_data_ref_micro, factorVars = c("REF_MICRO_POS"))
+print(complete_Table, showAllLevels = TRUE)
+
+# Remove rows with missing data
+complete_data_ref_micro <- complete_data_ref_micro[complete.cases(complete_data_ref_micro), ]
+
+#Histogram to check for the distribution
+ggplot(complete_data_ref_micro, aes(x = BIOMARKER_LEV)) +
+  geom_histogram(fill = "lightblue", color = "black") +
+  labs(title = "Distribution of Biomarker Levels", x = "Biomarker Level", y = "Frequency")
+
+# Box plot of biomarker level by test result for reference microscopy
+ggplot(complete_data_ref_micro, aes(x = REF_MICRO_POS, y = BIOMARKER_LEV, fill = REF_MICRO_POS)) +
+  geom_boxplot() +
+  labs(title = "Comparison of Biomarker Levels between Groups", x = "Microscopy Results", y = "Biomarker Level") +
+  scale_fill_manual(values = c("lightblue", "lightgreen"), labels = c("Negative", "Positive"))
+
+```
+
+```{r Mann Whitney U Test}
+# Split the dataset into two groups based on microscopy results
+positive_group <- filter(complete_data_ref_micro, REF_MICRO_POS == 1)
+negative_group <- filter(complete_data_ref_micro, REF_MICRO_POS == 0)
+
+# Compare biomarker levels between the two groups by performing a Mann-Whitney U test
+# Mann witney U preffered as the distribution of Biomarker levels were non-normal
+mannwhitney_test_result <- wilcox.test(positive_group$BIOMARKER_LEV, negative_group$BIOMARKER_LEV)
+
+# Print the Mann-Whitney U test results
+cat("Mann-Whitney U Test Results:\n")
+cat("p-value:", mannwhitney_test_result$p.value, "\n")
+cat("Test statistic:", mannwhitney_test_result$statistic, "\n")
+
+```
+
+```{r Logistic Regression}
+# Set the seed for reproducibility
+set.seed(123)
+
+# Splitting data into training and test set
+split <- sample.split(complete_data_ref_micro$REF_MICRO_POS, SplitRatio = 0.8)
+train_data <- complete_data_ref_micro[split, ]
+test_data <- complete_data_ref_micro[!split, ]
+
+# Logistic regression using training set
+model <- glm(REF_MICRO_POS ~ BIOMARKER_LEV, data = train_data, family = "binomial")
+
+# Summary of the regression
+print(summary(model))
+
+#calculate confidence interval at 95% confidence level
+confint(model, 'BIOMARKER_LEV', level=0.95)
+
+# Predicting the test set
+predicted_values <- predict(model, newdata = test_data, type = "response")
+predicted_classes <- ifelse(predicted_values > 0.5, "1", "0")
+
+# Creating factors with the same levels
+predicted_classes <- factor(predicted_classes, levels = c("1", "0"))
+reference <- factor(test_data$REF_MICRO_POS, levels = c("1", "0"))
+
+# Creating confusion matrix
+confusion_matrix <- confusionMatrix(data = predicted_classes, reference = reference)
+
+# Printing confusion matrix and statistics
+print(confusion_matrix)
+
+# Poor predictive ability or sensitivity maybe due to class imbalance
+#Interpretation: he estimated coefficient for the biomarker level is 0.020090.It indicates that for a one-unit increase in the biomarker level, the log-odds of the response variable being 1 (positive) increases by 0.020090.  
+#both the intercept and the biomarker level coefficient are highly significant (p < 0.001), indicating that they have a significant impact on the response variable.
+  
+# ROC curve and AUC
+roc_obj <- roc(response = reference, predictor = predicted_values)
+plot(roc_obj, main = "ROC Curve")
+auc <- auc(roc_obj)
+print(paste("AUC:", auc))  
+
+#n AUC of 0.766304347826087 suggests that the logistic regression model has a moderately good discriminatory ability. It can differentiate between positive and negative cases with a probability of 0.766304347826087, which is better than random guessing but not perfect. 
+
+# Residual analysis
+residuals <- residuals(model)
+
+# Plotting residuals
+plot(residuals, main = "Residual Plot", xlab = "Observation", ylab = "Residuals")
+
+# Normality test of residuals
+shapiro.test(residuals)
+
+# The residuals of the model are fitted around the 0 value of the plot.
+
+```
+
+##Sub-group analysis
+
+```{r Performance of index test by symptoms}
+symptoms_vs_index <- data.frame(table(data$DISEASE_SYMPT, data$INDEX_POS))
+names(symptoms_vs_index) <- c("DISEASE_SYMPT", "INDEX_POS", "Count")
+
+# Create the bar and legend
+ggplot(data = symptoms_vs_index, aes(x = DISEASE_SYMPT, y = Count, fill = factor(INDEX_POS))) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_fill_manual(values = c("aquamarine4", "darkgrey"),
+                    labels = c("Negative", "Positive"),
+                    name = "Index Pos") +
+  labs(title = "Performance of index test by symptoms",
+       x = "Disease Symptoms", y = "Count") +
+  theme_minimal()
+
+#---Chi Squared test
+# Chi-squared test of difference
+chisq_result <- chisq.test(table(data$DISEASE_SYMPT, data$INDEX_POS))
+print(chisq_result)
+#The result suggests that there is no significant relationship or association between the disease symptoms and the index test positivity.
+
+```
+
+#### The logistic regression was also conducted by including potential confounding varaibles such as symptoms presence, age, gender. The results were not significantly different
+
+```{r Performance of index test by Age}
+# Filter out N/A values in INDEX_POS and Age
+filtered_data_age_indexRDT <- data[complete.cases(data$INDEX_POS, data$AGE),]
+
+# Box plot of biomarker level by test result for reference microscopy
+ggplot(filtered_data_age_indexRDT, aes(x = INDEX_POS, y = BIOMARKER_LEV, fill = INDEX_POS)) +
+  geom_boxplot() +
+  labs(title = "Performance of index test by Age", x = "INDEX_POS", y = "Age") +
+  scale_fill_manual(values = c("lightblue", "lightgreen"), labels = c("No", "Yes"))
+
+#---- t-test of difference
+# Perform independent samples t-test with missing values removed
+t_result <- t.test(data$AGE ~ data$INDEX_POS, na.action = na.omit)
+
+# Print the t-test result
+print(t_result)
+# The p-value (0.6601) is greater than the significance level (commonly set at 0.05), suggesting that there is no significant difference in the means of the two groups.
+
+```
+
+```{r Performance of index test by gender}
+gender_vs_index <- data.frame(table(data$GENDER, data$INDEX_POS))
+names(gender_vs_index) <- c("GENDER", "INDEX_POS", "Count")
+
+# Create the bar and legend
+ggplot(data = gender_vs_index, aes(x = GENDER, y = Count, fill = factor(INDEX_POS))) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_fill_manual(values = c("aquamarine4", "darkgrey"),
+                    labels = c("Negative", "Positive"),
+                    name = "Index Pos") +
+  labs(title = "Performance of index test by Gender",
+       x = "Gender", y = "Count") +
+  theme_minimal()
+
+# Chi-squared test of difference
+chisq_result <- chisq.test(table(data$GENDER, data$INDEX_POS))
+print(chisq_result)
+#The result indicates that there is a statistically significant difference between the index test and gender. The low p-value suggests that the association between the variables is unlikely to be due to random chance alone.
+
+```
